@@ -88,7 +88,7 @@ const getSpeechErrorMessage = (error?: string) => {
 
 export default function Teleprompter({ script, onPlayingChange }: TeleprompterProps) {
   const [isPlaying, setIsPlaying] = useState(false);
-  const [speed, setSpeed] = useState(4);
+  const [speed, setSpeed] = useState(1);
   const [isVoiceEnabled, setIsVoiceEnabled] = useState(false);
   const [isListening, setIsListening] = useState(false);
   const [sensitivity, setSensitivity] = useState(6);
