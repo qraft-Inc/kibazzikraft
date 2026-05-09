@@ -252,10 +252,10 @@ export default function Teleprompter({ script, onPlayingChange }: TeleprompterPr
       const deltaMs = timestamp - lastTsRef.current;
       lastTsRef.current = timestamp;
 
-      // Enhanced speed calculation: exponential scaling for smoother control
-      // Speed 1-3: slow speed, 4-7: medium speed, 8-10: fast speed
-      const speedMultiplier = speed <= 3 ? speed * 35 : speed <= 7 ? speed * 40 : speed * 50;
-      const pixelsPerSecond = speedMultiplier;
+      // Optimized speed curve for professional teleprompter feel
+      // Formula: 50 + (speed - 1) * 38
+      // Speeds: 1→50, 2→88, 3→126, 4→164, 5→202, 6→240, 7→278, 8→316, 9→354, 10→392 px/s
+      const pixelsPerSecond = 50 + (speed - 1) * 38;
       const nextTop = scroller.scrollTop + (deltaMs / 1000) * pixelsPerSecond;
       const maxTop = scroller.scrollHeight - scroller.clientHeight;
 
