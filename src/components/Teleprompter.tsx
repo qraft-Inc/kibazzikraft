@@ -252,7 +252,10 @@ export default function Teleprompter({ script, onPlayingChange }: TeleprompterPr
       const deltaMs = timestamp - lastTsRef.current;
       lastTsRef.current = timestamp;
 
-      const pixelsPerSecond = speed * 22;
+      // Enhanced speed calculation: exponential scaling for smoother control
+      // Speed 1-3: slow speed, 4-7: medium speed, 8-10: fast speed
+      const speedMultiplier = speed <= 3 ? speed * 35 : speed <= 7 ? speed * 40 : speed * 50;
+      const pixelsPerSecond = speedMultiplier;
       const nextTop = scroller.scrollTop + (deltaMs / 1000) * pixelsPerSecond;
       const maxTop = scroller.scrollHeight - scroller.clientHeight;
 
@@ -600,6 +603,10 @@ export default function Teleprompter({ script, onPlayingChange }: TeleprompterPr
       <div
         ref={scrollerRef}
         className="relative h-[calc(100vh-4.5rem)] overflow-y-auto overscroll-contain"
+        style={{
+          WebkitOverflowScrolling: "touch",
+          scrollBehavior: "auto",
+        }}
       >
         <div
           className="relative min-h-full"
