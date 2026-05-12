@@ -2,237 +2,288 @@
 
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import {
-  FlipHorizontal2,
-  FlipVertical2,
+  ChevronLeft,
+  ChevronRight,
+  Download,
+  Maximize,
+  Minimize,
   Pause,
   Play,
   RotateCcw,
-  Gauge,
-  Mic,
+  Upload,
 } from "lucide-react";
 
-type RecognitionEventLike = {
-  resultIndex: number;
-  results: ArrayLike<{
-    0: { transcript: string };
-    isFinal: boolean;
-    length: number;
-  }>;
-};
-
-type RecognitionErrorLike = {
-  error?: string;
-};
-
-type SpeechRecognitionLike = {
-  continuous: boolean;
-  interimResults: boolean;
-  lang: string;
-  start: () => void;
-  stop: () => void;
-  abort: () => void;
-  onstart: (() => void) | null;
-  onend: (() => void) | null;
-  onresult: ((event: RecognitionEventLike) => void) | null;
-  onerror: ((event: RecognitionErrorLike) => void) | null;
-};
-
-type SpeechRecognitionCtor = new () => SpeechRecognitionLike;
-
-declare global {
-  interface Window {
-    SpeechRecognition?: SpeechRecognitionCtor;
-    webkitSpeechRecognition?: SpeechRecognitionCtor;
-  }
-}
-
 type TeleprompterProps = {
-  script: string;
   onPlayingChange?: (isPlaying: boolean) => void;
 };
 
-type VoiceMatchResult = {
-  lineIndex: number;
-  score: number;
+type UploadedScript = {
+  id: string;
+  fileName: string;
+  title: string;
+  content: string;
+  loadedAt: string;
+};
+
+type TakeMarker = {
+  id: string;
+  label: string;
+  elapsedAt: string;
+  createdAt: string;
+};
+
+const STORAGE_KEYS = {
+  speed: "teleprompter.speed",
+  fontSize: "teleprompter.fontSize",
+  mirrorMode: "teleprompter.mirrorMode",
+  currentScriptId: "teleprompter.currentScriptId",
 };
 
 const MIN_SPEED = 1;
-const MAX_SPEED = 10;
-const MIN_SENSITIVITY = 1;
-const MAX_SENSITIVITY = 10;
+const MAX_SPEED = 12;
+const MIN_FONT_SIZE = 32;
+const MAX_FONT_SIZE = 96;
 
-const normalizeText = (value: string) =>
-  value
-    .toLowerCase()
-    .replace(/[^a-z0-9\s]/g, " ")
-    .replace(/\s+/g, " ")
-    .trim();
+const isSupportedScriptFile = (fileName: string) => /\.(txt|md)$/i.test(fileName);
 
-const toTokenSet = (value: string) => new Set(normalizeText(value).split(" ").filter(Boolean));
+const toTitleFromFileName = (fileName: string) =>
+  fileName
+    .replace(/\.(txt|md)$/i, "")
+    .replace(/[_-]+/g, " ")
+    .trim() || "Untitled Script";
 
-const getSpeechErrorMessage = (error?: string) => {
-  if (error === "not-allowed" || error === "service-not-allowed") {
-    return "Microphone access was blocked. You can continue immediately using Manual Mode (Play/Pause + Speed controls). To use Voice Mode later, allow mic permission in your browser site settings, then re-enable Voice Mode. If deployed, use HTTPS. In local development, use localhost.";
-  }
-
-  if (error === "audio-capture") {
-    return "No microphone was detected. Connect or enable a microphone, then try Voice Mode again.";
-  }
-
-  if (error === "network") {
-    return "Speech recognition had a network issue. Check your connection and try Voice Mode again.";
-  }
-
-  return `Voice recognition error (${error ?? "unknown"}). Switched back to manual mode.`;
+const formatElapsed = (seconds: number) => {
+  const mins = Math.floor(seconds / 60)
+    .toString()
+    .padStart(2, "0");
+  const secs = Math.floor(seconds % 60)
+    .toString()
+    .padStart(2, "0");
+  return `${mins}:${secs}`;
 };
 
-export default function Teleprompter({ script, onPlayingChange }: TeleprompterProps) {
-  const [isPlaying, setIsPlaying] = useState(false);
-  const [speed, setSpeed] = useState(1);
-  const [isVoiceEnabled, setIsVoiceEnabled] = useState(false);
-  const [isListening, setIsListening] = useState(false);
-  const [sensitivity, setSensitivity] = useState(6);
-  const [voiceWarning, setVoiceWarning] = useState<string | null>(null);
-  const [isRequestingMic, setIsRequestingMic] = useState(false);
-  const [lastTranscript, setLastTranscript] = useState("");
-  const [voiceConfidence, setVoiceConfidence] = useState<number | null>(null);
-  const [isMirrored, setIsMirrored] = useState(false);
-  const [isFlippedVertical, setIsFlippedVertical] = useState(false);
-  const [currentLineIndex, setCurrentLineIndex] = useState(0);
+type ParsedLine =
+  | { kind: "blank"; text: string }
+  | { kind: "pause"; text: string }
+  | { kind: "heading"; text: string }
+  | { kind: "speaker"; speaker: string; text: string }
+  | { kind: "text"; text: string };
 
+const parseLine = (line: string): ParsedLine => {
+  const trimmed = line.trim();
+
+  if (!trimmed) {
+    return { kind: "blank", text: "" };
+  }
+
+  if (/^\[PAUSE[^\]]*\]$/i.test(trimmed)) {
+    return { kind: "pause", text: trimmed };
+  }
+
+  if (/^#{1,6}\s+/.test(trimmed)) {
+    return { kind: "heading", text: trimmed.replace(/^#{1,6}\s+/, "") };
+  }
+
+  if (/^MODULE\b/i.test(trimmed)) {
+    return { kind: "heading", text: trimmed };
+  }
+
+  const speakerMatch = trimmed.match(/^([A-Z][A-Z0-9\s]{1,24}):\s*(.*)$/);
+  if (speakerMatch) {
+    return {
+      kind: "speaker",
+      speaker: speakerMatch[1],
+      text: speakerMatch[2],
+    };
+  }
+
+  return { kind: "text", text: line };
+};
+
+export default function Teleprompter({ onPlayingChange }: TeleprompterProps) {
+  const [scripts, setScripts] = useState<UploadedScript[]>([]);
+  const [currentScriptId, setCurrentScriptId] = useState<string | null>(null);
+  const [isSidebarOpen, setIsSidebarOpen] = useState(true);
+  const [isPlaying, setIsPlaying] = useState(false);
+  const [speed, setSpeed] = useState(4);
+  const [fontSize, setFontSize] = useState(56);
+  const [isMirrored, setIsMirrored] = useState(false);
+  const [isFullscreen, setIsFullscreen] = useState(false);
+  const [uploadError, setUploadError] = useState<string | null>(null);
+  const [elapsedSeconds, setElapsedSeconds] = useState(0);
+  const [takeLog, setTakeLog] = useState<TakeMarker[]>([]);
+  const [editorNotes, setEditorNotes] = useState("");
+
+  const fileInputRef = useRef<HTMLInputElement | null>(null);
   const frameRef = useRef<number | null>(null);
   const lastTsRef = useRef<number | null>(null);
   const scrollerRef = useRef<HTMLDivElement | null>(null);
-  const lineRefs = useRef<Array<HTMLParagraphElement | null>>([]);
-  const recognitionRef = useRef<SpeechRecognitionLike | null>(null);
-  const shouldRestartRecognitionRef = useRef(false);
-  const currentLineIndexRef = useRef(0);
-  const sensitivityRef = useRef(6);
-  const voiceLinesRef = useRef<
-    Array<{ displayIndex: number; normalized: string; tokens: Set<string> }>
-  >([]);
+  const rootRef = useRef<HTMLElement | null>(null);
 
-  const scriptLines = useMemo(() => script.split("\n"), [script]);
-
-  const voiceLines = useMemo(
-    () =>
-      scriptLines
-        .map((line, displayIndex) => {
-          const normalized = normalizeText(line);
-          return {
-            displayIndex,
-            normalized,
-            tokens: toTokenSet(line),
-          };
-        })
-        .filter((line) => line.normalized.length > 0),
-    [scriptLines],
+  const currentScript = useMemo(
+    () => scripts.find((item) => item.id === currentScriptId) ?? null,
+    [scripts, currentScriptId],
   );
 
-  const getBestVoiceMatch = useCallback((transcript: string): VoiceMatchResult | null => {
-    const voiceLinesSnapshot = voiceLinesRef.current;
-    const normalizedTranscript = normalizeText(transcript);
-    if (!normalizedTranscript || voiceLinesSnapshot.length === 0) return null;
+  const currentScriptIndex = useMemo(
+    () => scripts.findIndex((item) => item.id === currentScriptId),
+    [scripts, currentScriptId],
+  );
 
-    const transcriptTokens = toTokenSet(normalizedTranscript);
-    if (transcriptTokens.size === 0) return null;
+  const parsedLines = useMemo(() => {
+    if (!currentScript) return [];
+    return currentScript.content.split("\n").map(parseLine);
+  }, [currentScript]);
 
-    const currentVoicePosition = Math.max(
-      0,
-      voiceLinesSnapshot.findIndex(
-        (line) => line.displayIndex >= currentLineIndexRef.current,
-      ),
-    );
+  const resetToTop = useCallback(() => {
+    const scroller = scrollerRef.current;
+    if (scroller) {
+      scroller.scrollTop = 0;
+    }
+    lastTsRef.current = null;
+    setIsPlaying(false);
+  }, []);
 
-    const lookAhead = 3 + sensitivityRef.current * 2;
-    const start = Math.max(0, currentVoicePosition - 1);
-    const end = Math.min(
-      voiceLinesSnapshot.length - 1,
-      currentVoicePosition + lookAhead,
-    );
+  const selectScript = useCallback(
+    (scriptId: string) => {
+      setCurrentScriptId(scriptId);
+      resetToTop();
+      setUploadError(null);
+    },
+    [resetToTop],
+  );
 
-    let bestScore = -1;
-    let bestDisplayIndex: number | null = null;
+  const goToRelativeScript = useCallback(
+    (direction: -1 | 1) => {
+      if (scripts.length === 0) return;
+      const activeIndex = currentScriptIndex >= 0 ? currentScriptIndex : 0;
+      const nextIndex = (activeIndex + direction + scripts.length) % scripts.length;
+      selectScript(scripts[nextIndex].id);
+    },
+    [currentScriptIndex, scripts, selectScript],
+  );
 
-    for (let i = start; i <= end; i += 1) {
-      const candidate = voiceLinesSnapshot[i];
-      let overlap = 0;
-      transcriptTokens.forEach((token) => {
-        if (candidate.tokens.has(token)) overlap += 1;
-      });
+  // File upload logic: accepts .txt/.md only, reads content with file.text(),
+  // and stores scripts in in-memory React state (no backend/database).
+  const handleFileImport = useCallback(async (fileList: FileList | null) => {
+    if (!fileList) return;
+    const selectedFiles = Array.from(fileList);
+    if (selectedFiles.length === 0) return;
 
-      const tokenScore = overlap / Math.max(candidate.tokens.size, 1);
-      const containsScore =
-        candidate.normalized.includes(normalizedTranscript) ||
-        normalizedTranscript.includes(candidate.normalized)
-          ? 0.35
-          : 0;
-      const score = Math.min(1, tokenScore + containsScore);
+    const unsupported = selectedFiles.filter((file) => !isSupportedScriptFile(file.name));
+    const supported = selectedFiles.filter((file) => isSupportedScriptFile(file.name));
 
-      if (score > bestScore) {
-        bestScore = score;
-        bestDisplayIndex = candidate.displayIndex;
+    const loadedScripts: UploadedScript[] = [];
+    const failedFiles: string[] = [];
+
+    for (const file of supported) {
+      try {
+        const content = await file.text();
+        loadedScripts.push({
+          id: `${Date.now()}-${file.name}-${Math.random().toString(36).slice(2, 8)}`,
+          fileName: file.name,
+          title: toTitleFromFileName(file.name),
+          content,
+          loadedAt: new Date().toISOString(),
+        });
+      } catch {
+        failedFiles.push(file.name);
       }
     }
 
-    const threshold = 0.58 - sensitivityRef.current * 0.04;
-    if (bestDisplayIndex !== null && bestScore >= threshold) {
-      return { lineIndex: bestDisplayIndex, score: bestScore };
+    if (loadedScripts.length > 0) {
+      setScripts((prev) => [...prev, ...loadedScripts]);
+      setCurrentScriptId((prev) => prev ?? loadedScripts[0].id);
     }
 
-    return null;
+    if (unsupported.length > 0 || failedFiles.length > 0) {
+      const unsupportedNames = unsupported.map((file) => file.name).join(", ");
+      const failedNames = failedFiles.join(", ");
+      const chunks = [
+        unsupportedNames ? `Unsupported file type: ${unsupportedNames}` : "",
+        failedNames ? `Could not read: ${failedNames}` : "",
+      ].filter(Boolean);
+      setUploadError(chunks.join(" • "));
+    } else {
+      setUploadError(null);
+    }
   }, []);
 
-  const voiceConfidenceLabel = useMemo(() => {
-    if (voiceConfidence === null) return null;
-    if (voiceConfidence >= 0.75) return "High";
-    if (voiceConfidence >= 0.5) return "Medium";
-    return "Low";
-  }, [voiceConfidence]);
+  const clearAllScripts = useCallback(() => {
+    setIsPlaying(false);
+    setScripts([]);
+    setCurrentScriptId(null);
+    setUploadError(null);
+    setTakeLog([]);
+    setElapsedSeconds(0);
+  }, []);
 
-  const voiceConfidenceBadgeClass = useMemo(() => {
-    if (voiceConfidenceLabel === "High") {
-      return "border-emerald-300/60 bg-emerald-300/20 text-emerald-100";
-    }
-    if (voiceConfidenceLabel === "Medium") {
-      return "border-amber-300/60 bg-amber-300/20 text-amber-100";
-    }
-    if (voiceConfidenceLabel === "Low") {
-      return "border-rose-300/60 bg-rose-300/20 text-rose-100";
-    }
-    return "border-zinc-400/50 bg-zinc-700/30 text-zinc-100";
-  }, [voiceConfidenceLabel]);
+  const toggleFullscreen = useCallback(async () => {
+    const root = rootRef.current;
+    if (!root) return;
 
-  const scrollToLine = (lineIndex: number) => {
-    const lineElement = lineRefs.current[lineIndex];
-    if (!lineElement) return;
-    lineElement.scrollIntoView({ behavior: "smooth", block: "center" });
-  };
+    if (document.fullscreenElement) {
+      await document.exitFullscreen();
+      return;
+    }
 
-  const getSpeechRecognitionConstructor = useCallback(() => {
-    if (typeof window === "undefined") return null;
-    return window.SpeechRecognition ?? window.webkitSpeechRecognition ?? null;
+    await root.requestFullscreen();
+  }, []);
+
+  const addTakeMarker = useCallback(() => {
+    setTakeLog((prev) => [
+      ...prev,
+      {
+        id: `${Date.now()}-${prev.length + 1}`,
+        label: `TAKE ${prev.length + 1}`,
+        elapsedAt: formatElapsed(elapsedSeconds),
+        createdAt: new Date().toISOString(),
+      },
+    ]);
+  }, [elapsedSeconds]);
+
+  const exportTakeLog = useCallback(() => {
+    const lines = [
+      "Teleprompter Take Log",
+      `Script: ${currentScript?.fileName ?? "No script selected"}`,
+      `Elapsed: ${formatElapsed(elapsedSeconds)}`,
+      `Generated: ${new Date().toLocaleString()}`,
+      "",
+      "Take Markers:",
+      ...(takeLog.length > 0
+        ? takeLog.map((item) => `${item.label} at ${item.elapsedAt}`)
+        : ["No take markers recorded."]),
+      "",
+      "Notes for Editor:",
+      editorNotes.trim() || "(No notes)",
+    ];
+
+    const blob = new Blob([lines.join("\n")], { type: "text/plain;charset=utf-8" });
+    const url = URL.createObjectURL(blob);
+    const anchor = document.createElement("a");
+    anchor.href = url;
+    anchor.download = `take-log-${new Date().toISOString().slice(0, 19).replace(/:/g, "-")}.txt`;
+    anchor.click();
+    URL.revokeObjectURL(url);
+  }, [currentScript?.fileName, elapsedSeconds, takeLog, editorNotes]);
+
+  useEffect(() => {
+    onPlayingChange?.(isPlaying);
+  }, [isPlaying, onPlayingChange]);
+
+  useEffect(() => {
+    const onFullscreenChange = () => {
+      setIsFullscreen(document.fullscreenElement === rootRef.current);
+    };
+
+    document.addEventListener("fullscreenchange", onFullscreenChange);
+    return () => {
+      document.removeEventListener("fullscreenchange", onFullscreenChange);
+    };
   }, []);
 
   useEffect(() => {
-    setCurrentLineIndex(0);
-    lineRefs.current = [];
-  }, [script]);
-
-  useEffect(() => {
-    currentLineIndexRef.current = currentLineIndex;
-  }, [currentLineIndex]);
-
-  useEffect(() => {
-    sensitivityRef.current = sensitivity;
-  }, [sensitivity]);
-
-  useEffect(() => {
-    voiceLinesRef.current = voiceLines;
-  }, [voiceLines]);
-
-  useEffect(() => {
-    if (!isPlaying || isVoiceEnabled) {
+    if (!isPlaying) {
       if (frameRef.current !== null) {
         cancelAnimationFrame(frameRef.current);
         frameRef.current = null;
@@ -252,15 +303,12 @@ export default function Teleprompter({ script, onPlayingChange }: TeleprompterPr
       const deltaMs = timestamp - lastTsRef.current;
       lastTsRef.current = timestamp;
 
-      // Optimized speed curve for professional teleprompter feel
-      // Formula: 50 + (speed - 1) * 38
-      // Speeds: 1→50, 2→88, 3→126, 4→164, 5→202, 6→240, 7→278, 8→316, 9→354, 10→392 px/s
-      const pixelsPerSecond = 50 + (speed - 1) * 38;
+      const pixelsPerSecond = 30 + speed * 24;
       const nextTop = scroller.scrollTop + (deltaMs / 1000) * pixelsPerSecond;
       const maxTop = scroller.scrollHeight - scroller.clientHeight;
 
       if (nextTop >= maxTop) {
-        scroller.scrollTop = maxTop;
+        scroller.scrollTop = Math.max(maxTop, 0);
         setIsPlaying(false);
         return;
       }
@@ -278,115 +326,72 @@ export default function Teleprompter({ script, onPlayingChange }: TeleprompterPr
       }
       lastTsRef.current = null;
     };
-  }, [isPlaying, speed, isVoiceEnabled]);
+  }, [isPlaying, speed]);
 
   useEffect(() => {
-    onPlayingChange?.(isVoiceEnabled ? isListening : isPlaying);
-  }, [isPlaying, isVoiceEnabled, isListening, onPlayingChange]);
+    if (!isPlaying) return;
+    const timer = window.setInterval(() => {
+      setElapsedSeconds((prev) => prev + 1);
+    }, 1000);
+    return () => window.clearInterval(timer);
+  }, [isPlaying]);
 
   useEffect(() => {
-    if (!isVoiceEnabled) {
-      shouldRestartRecognitionRef.current = false;
-      recognitionRef.current?.stop();
-      setIsListening(false);
-      setLastTranscript("");
-      setVoiceConfidence(null);
-      return;
+    if (typeof window === "undefined") return;
+
+    const savedSpeed = Number(window.localStorage.getItem(STORAGE_KEYS.speed));
+    const savedFontSize = Number(window.localStorage.getItem(STORAGE_KEYS.fontSize));
+    const savedMirror = window.localStorage.getItem(STORAGE_KEYS.mirrorMode) === "true";
+    const savedScriptId = window.localStorage.getItem(STORAGE_KEYS.currentScriptId);
+
+    if (!Number.isNaN(savedSpeed) && savedSpeed >= MIN_SPEED && savedSpeed <= MAX_SPEED) {
+      setSpeed(savedSpeed);
     }
-
-    const SpeechRecognition = getSpeechRecognitionConstructor();
-    if (!SpeechRecognition) {
-      setVoiceWarning(
-        "Voice mode is not supported in this browser. Falling back to manual speed control.",
-      );
-      setIsVoiceEnabled(false);
-      return;
+    if (
+      !Number.isNaN(savedFontSize) &&
+      savedFontSize >= MIN_FONT_SIZE &&
+      savedFontSize <= MAX_FONT_SIZE
+    ) {
+      setFontSize(savedFontSize);
     }
-
-    if (!recognitionRef.current) {
-      const recognition = new SpeechRecognition();
-      recognition.continuous = true;
-      recognition.interimResults = true;
-      recognition.lang = "en-US";
-
-      recognition.onstart = () => {
-        setIsListening(true);
-      };
-
-      recognition.onresult = (event) => {
-        let transcript = "";
-        for (let i = event.resultIndex; i < event.results.length; i += 1) {
-          const chunk = event.results[i]?.[0]?.transcript ?? "";
-          transcript += ` ${chunk}`;
-        }
-
-        const transcriptPreview = transcript.trim();
-        if (transcriptPreview) {
-          setLastTranscript(transcriptPreview);
-        }
-
-        const bestMatch = getBestVoiceMatch(transcript);
-        if (bestMatch === null) return;
-        setVoiceConfidence(bestMatch.score);
-        setCurrentLineIndex(bestMatch.lineIndex);
-        scrollToLine(bestMatch.lineIndex);
-      };
-
-      recognition.onerror = (event) => {
-        setVoiceWarning(getSpeechErrorMessage(event.error));
-        shouldRestartRecognitionRef.current = false;
-        setIsListening(false);
-        setIsVoiceEnabled(false);
-        setVoiceConfidence(null);
-      };
-
-      recognition.onend = () => {
-        setIsListening(false);
-        if (!shouldRestartRecognitionRef.current) return;
-
-        try {
-          recognition.start();
-        } catch {
-          setVoiceWarning(
-            "Voice recognition could not restart. Switched back to manual mode.",
-          );
-          shouldRestartRecognitionRef.current = false;
-          setIsVoiceEnabled(false);
-        }
-      };
-
-      recognitionRef.current = recognition;
+    setIsMirrored(savedMirror);
+    if (savedScriptId) {
+      setCurrentScriptId(savedScriptId);
     }
-
-    setIsPlaying(false);
-    setVoiceWarning(null);
-    shouldRestartRecognitionRef.current = true;
-
-    try {
-      recognitionRef.current.start();
-    } catch {
-      setVoiceWarning(
-        "Voice recognition could not start. Switched back to manual mode.",
-      );
-      shouldRestartRecognitionRef.current = false;
-      setIsVoiceEnabled(false);
-      setIsListening(false);
-      setVoiceConfidence(null);
-    }
-
-    return () => {
-      shouldRestartRecognitionRef.current = false;
-      recognitionRef.current?.stop();
-    };
-  }, [isVoiceEnabled, getBestVoiceMatch, getSpeechRecognitionConstructor]);
-
-  useEffect(() => {
-    return () => {
-      shouldRestartRecognitionRef.current = false;
-      recognitionRef.current?.abort();
-    };
   }, []);
 
+  useEffect(() => {
+    if (typeof window === "undefined") return;
+    window.localStorage.setItem(STORAGE_KEYS.speed, String(speed));
+  }, [speed]);
+
+  useEffect(() => {
+    if (typeof window === "undefined") return;
+    window.localStorage.setItem(STORAGE_KEYS.fontSize, String(fontSize));
+  }, [fontSize]);
+
+  useEffect(() => {
+    if (typeof window === "undefined") return;
+    window.localStorage.setItem(STORAGE_KEYS.mirrorMode, String(isMirrored));
+  }, [isMirrored]);
+
+  useEffect(() => {
+    if (typeof window === "undefined") return;
+    if (currentScriptId) {
+      window.localStorage.setItem(STORAGE_KEYS.currentScriptId, currentScriptId);
+    }
+  }, [currentScriptId]);
+
+  useEffect(() => {
+    if (scripts.length === 0) return;
+    if (!currentScriptId || !scripts.some((item) => item.id === currentScriptId)) {
+      setCurrentScriptId(scripts[0].id);
+    }
+  }, [scripts, currentScriptId]);
+
+  // Keyboard shortcuts:
+  // Space=Play/Pause, ArrowUp=slow down, ArrowDown=speed up,
+  // R=reset, F=fullscreen, M=mirror, N=next script, P=previous script.
   useEffect(() => {
     const onKeyDown = (event: KeyboardEvent) => {
       const target = event.target as HTMLElement | null;
@@ -400,245 +405,336 @@ export default function Teleprompter({ script, onPlayingChange }: TeleprompterPr
 
       if (event.code === "Space") {
         event.preventDefault();
-        if (isVoiceEnabled) return;
         setIsPlaying((prev) => !prev);
+        return;
       }
 
       if (event.code === "ArrowUp") {
         event.preventDefault();
-        if (isVoiceEnabled) return;
-        setSpeed((prev) => Math.min(MAX_SPEED, prev + 1));
+        setSpeed((prev) => Math.max(MIN_SPEED, prev - 1));
+        return;
       }
 
       if (event.code === "ArrowDown") {
         event.preventDefault();
-        if (isVoiceEnabled) return;
-        setSpeed((prev) => Math.max(MIN_SPEED, prev - 1));
+        setSpeed((prev) => Math.min(MAX_SPEED, prev + 1));
+        return;
+      }
+
+      if (event.key.toLowerCase() === "r") {
+        event.preventDefault();
+        resetToTop();
+        return;
+      }
+
+      if (event.key.toLowerCase() === "f") {
+        event.preventDefault();
+        void toggleFullscreen();
+        return;
+      }
+
+      if (event.key.toLowerCase() === "m") {
+        event.preventDefault();
+        setIsMirrored((prev) => !prev);
+        return;
+      }
+
+      if (event.key.toLowerCase() === "n") {
+        event.preventDefault();
+        goToRelativeScript(1);
+        return;
+      }
+
+      if (event.key.toLowerCase() === "p") {
+        event.preventDefault();
+        goToRelativeScript(-1);
       }
     };
 
     window.addEventListener("keydown", onKeyDown);
     return () => window.removeEventListener("keydown", onKeyDown);
-  }, [isVoiceEnabled]);
-
-  const resetToStart = () => {
-    const scroller = scrollerRef.current;
-    if (!scroller) return;
-    scroller.scrollTop = 0;
-    lastTsRef.current = null;
-    setCurrentLineIndex(0);
-    setLastTranscript("");
-    setVoiceConfidence(null);
-    setIsPlaying(false);
-  };
-
-  const retryMicrophonePermission = async () => {
-    if (typeof navigator === "undefined" || !navigator.mediaDevices?.getUserMedia) {
-      setVoiceWarning(
-        "Your browser does not support direct microphone permission prompts. Open browser site settings and allow microphone.",
-      );
-      return;
-    }
-
-    try {
-      setIsRequestingMic(true);
-      const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
-      stream.getTracks().forEach((track) => track.stop());
-      setVoiceWarning(
-        "Microphone permission granted. You can now re-enable Voice Mode.",
-      );
-    } catch {
-      setVoiceWarning(
-        "Microphone permission is still blocked. Allow mic in browser site settings, refresh, then enable Voice Mode.",
-      );
-    } finally {
-      setIsRequestingMic(false);
-    }
-  };
-
-  const transformValue = [
-    isMirrored ? "scaleX(-1)" : "",
-    isFlippedVertical ? "scaleY(-1)" : "",
-  ]
-    .filter(Boolean)
-    .join(" ");
+  }, [goToRelativeScript, resetToTop, toggleFullscreen]);
 
   return (
-    <section className="relative overflow-hidden rounded-2xl bg-black text-white">
-      <div className="sticky top-0 z-30 border-b border-white/15 bg-black/90 backdrop-blur">
-        <div className="mx-auto flex w-full max-w-6xl flex-wrap items-center gap-3 px-4 py-3 sm:px-6">
+    <section ref={rootRef} className="relative h-screen overflow-hidden bg-black text-white">
+      <input
+        ref={fileInputRef}
+        type="file"
+        accept=".txt,.md"
+        multiple
+        className="hidden"
+        onChange={(event) => {
+          void handleFileImport(event.target.files);
+          event.currentTarget.value = "";
+        }}
+      />
+
+      <div className="flex h-full">
+        <aside
+          className={`border-r border-zinc-800 bg-zinc-950 transition-all duration-200 ${
+            isSidebarOpen ? "w-80 p-4" : "w-0 overflow-hidden p-0"
+          }`}
+        >
+          <div className="flex items-center justify-between">
+            <h2 className="text-sm font-semibold tracking-wide text-zinc-200">Script Queue</h2>
+            <button
+              type="button"
+              onClick={() => fileInputRef.current?.click()}
+              className="inline-flex items-center gap-2 rounded-md border border-zinc-700 bg-zinc-800 px-3 py-2 text-xs font-medium transition hover:bg-zinc-700"
+            >
+              <Upload size={14} /> Upload
+            </button>
+          </div>
+
           <button
             type="button"
-            onClick={() => {
-              if (isVoiceEnabled) return;
-              setIsPlaying((prev) => !prev);
-            }}
-            disabled={isVoiceEnabled}
-            className="inline-flex items-center gap-2 rounded-md border border-white/20 bg-white/10 px-3 py-2 text-sm font-medium transition hover:bg-white/20 disabled:cursor-not-allowed disabled:opacity-40"
+            onClick={clearAllScripts}
+            className="mt-3 w-full rounded-md border border-zinc-700 bg-zinc-900 px-3 py-2 text-xs font-medium text-zinc-300 transition hover:bg-zinc-800"
           >
-            {isPlaying ? <Pause size={16} /> : <Play size={16} />}
-            {isPlaying ? "Pause" : "Play"}
+            Clear All Scripts
           </button>
 
-          <label className="inline-flex items-center gap-2 text-sm text-zinc-200">
-            <Gauge size={16} />
-            <span>Speed {speed}</span>
-            <input
-              type="range"
-              min={MIN_SPEED}
-              max={MAX_SPEED}
-              value={speed}
-              onChange={(event) => setSpeed(Number(event.target.value))}
-              disabled={isVoiceEnabled}
-              className="h-2 w-36 cursor-pointer accent-white disabled:cursor-not-allowed disabled:opacity-40 sm:w-44"
+          {uploadError ? (
+            <p className="mt-3 rounded-md border border-amber-300/30 bg-amber-300/10 p-2 text-xs text-amber-200">
+              {uploadError}
+            </p>
+          ) : null}
+
+          <ul className="mt-4 space-y-2 overflow-y-auto pr-1 text-sm">
+            {scripts.map((item) => {
+              const active = item.id === currentScriptId;
+              const isEmpty = item.content.trim().length === 0;
+              return (
+                <li key={item.id}>
+                  <button
+                    type="button"
+                    onClick={() => selectScript(item.id)}
+                    className={`w-full rounded-lg border px-3 py-2 text-left transition ${
+                      active
+                        ? "border-emerald-500 bg-emerald-500/10 text-emerald-100"
+                        : "border-zinc-800 bg-zinc-900 text-zinc-300 hover:border-zinc-600"
+                    }`}
+                  >
+                    <p className="truncate font-medium">{item.title}</p>
+                    <p className="truncate text-xs opacity-75">{item.fileName}</p>
+                    <p className="mt-1 text-[11px] text-zinc-500">
+                      {new Date(item.loadedAt).toLocaleTimeString()} {isEmpty ? "• empty file" : ""}
+                    </p>
+                  </button>
+                </li>
+              );
+            })}
+          </ul>
+
+          <div className="mt-4 space-y-3 border-t border-zinc-800 pt-4">
+            <button
+              type="button"
+              onClick={addTakeMarker}
+              className="w-full rounded-md border border-zinc-700 bg-zinc-800 px-3 py-2 text-sm font-semibold transition hover:bg-zinc-700"
+            >
+              Take Marker
+            </button>
+
+            <textarea
+              value={editorNotes}
+              onChange={(event) => setEditorNotes(event.target.value)}
+              placeholder="Notes for Editor"
+              className="h-28 w-full resize-y rounded-md border border-zinc-700 bg-black/40 p-2 text-sm text-zinc-100 outline-none focus:border-zinc-500"
             />
-          </label>
 
-          <button
-            type="button"
-            onClick={() => {
-              setIsVoiceEnabled((prev) => !prev);
-            }}
-            className="inline-flex items-center gap-2 rounded-md border border-white/20 bg-white/10 px-3 py-2 text-sm font-medium transition hover:bg-white/20"
-          >
-            <Mic
-              size={16}
-              className={isVoiceEnabled && isListening ? "animate-pulse text-emerald-300" : ""}
-            />
-            {isVoiceEnabled ? "Voice On" : "Voice Mode"}
-          </button>
+            <button
+              type="button"
+              onClick={exportTakeLog}
+              className="inline-flex w-full items-center justify-center gap-2 rounded-md border border-zinc-700 bg-zinc-900 px-3 py-2 text-sm font-medium transition hover:bg-zinc-800"
+            >
+              <Download size={14} /> Export Take Log
+            </button>
 
-          <label className="inline-flex items-center gap-2 text-sm text-zinc-200">
-            <span>Sensitivity {sensitivity}</span>
-            <input
-              type="range"
-              min={MIN_SENSITIVITY}
-              max={MAX_SENSITIVITY}
-              value={sensitivity}
-              onChange={(event) => setSensitivity(Number(event.target.value))}
-              className="h-2 w-36 cursor-pointer accent-emerald-300 sm:w-44"
-            />
-          </label>
-
-          <button
-            type="button"
-            onClick={() => setIsMirrored((prev) => !prev)}
-            className="inline-flex items-center gap-2 rounded-md border border-white/20 bg-white/10 px-3 py-2 text-sm font-medium transition hover:bg-white/20"
-          >
-            <FlipHorizontal2 size={16} />
-            {isMirrored ? "Mirror On" : "Mirror Mode"}
-          </button>
-
-          <button
-            type="button"
-            onClick={() => setIsFlippedVertical((prev) => !prev)}
-            className="inline-flex items-center gap-2 rounded-md border border-white/20 bg-white/10 px-3 py-2 text-sm font-medium transition hover:bg-white/20"
-          >
-            <FlipVertical2 size={16} />
-            {isFlippedVertical ? "Flip On" : "Flip Vertical"}
-          </button>
-
-          <button
-            type="button"
-            onClick={resetToStart}
-            className="inline-flex items-center gap-2 rounded-md border border-white/20 bg-white/10 px-3 py-2 text-sm font-medium transition hover:bg-white/20"
-          >
-            <RotateCcw size={16} />
-            Reset
-          </button>
-
-          <p className="ml-auto text-xs text-zinc-400">
-            {isVoiceEnabled
-              ? isListening
-                ? "Listening... voice-matched scrolling active"
-                : "Voice mode on. Waiting for microphone access"
-              : "Space: Play/Pause • ArrowUp/ArrowDown: Speed"}
-          </p>
-
-          {isVoiceEnabled ? (
-            <div className="w-full rounded-md border border-emerald-300/30 bg-emerald-300/10 px-3 py-2 text-xs text-emerald-100">
-              <div className="mb-1 flex items-center justify-between gap-2">
-                <span className="font-semibold">Live Transcript</span>
-                <span
-                  className={`rounded-full border px-2 py-0.5 text-[11px] uppercase tracking-wide ${voiceConfidenceBadgeClass}`}
-                >
-                  Confidence: {voiceConfidenceLabel ?? "--"}
-                </span>
-              </div>
-              {lastTranscript ? (
-                <span className="italic">&quot;{lastTranscript.slice(0, 200)}&quot;</span>
+            <div className="max-h-36 space-y-1 overflow-y-auto rounded-md border border-zinc-800 bg-zinc-900/50 p-2 text-xs text-zinc-300">
+              {takeLog.length > 0 ? (
+                takeLog.map((item) => (
+                  <p key={item.id}>
+                    <span className="font-semibold text-yellow-300">{item.label}</span> @ {item.elapsedAt}
+                  </p>
+                ))
               ) : (
-                <span className="text-emerald-200/80">Waiting for speech...</span>
+                <p className="text-zinc-500">No take markers yet.</p>
               )}
             </div>
-          ) : null}
-        </div>
-        {voiceWarning ? (
-          <div className="border-t border-amber-300/30 bg-amber-300/10 px-4 py-2 text-sm text-amber-200 sm:px-6">
-            <p>{voiceWarning}</p>
-            <div className="mt-2 flex flex-wrap items-center gap-2">
+          </div>
+        </aside>
+
+        <div className="relative flex min-w-0 flex-1 flex-col">
+          <button
+            type="button"
+            onClick={() => setIsSidebarOpen((prev) => !prev)}
+            className="absolute left-3 top-3 z-30 rounded-md border border-zinc-700 bg-black/70 p-2 text-zinc-200 backdrop-blur transition hover:bg-zinc-900"
+            aria-label={isSidebarOpen ? "Collapse sidebar" : "Open sidebar"}
+          >
+            {isSidebarOpen ? <ChevronLeft size={16} /> : <ChevronRight size={16} />}
+          </button>
+
+          <div
+            ref={scrollerRef}
+            className="min-h-0 flex-1 overflow-y-auto overscroll-contain"
+            style={{ WebkitOverflowScrolling: "touch" }}
+          >
+            <div
+              className="mx-auto w-full max-w-6xl px-6 pb-[40vh] pt-[28vh] sm:px-10 lg:px-20"
+              style={{ transform: isMirrored ? "scaleX(-1)" : undefined }}
+            >
+              {currentScript ? (
+                <div
+                  className="space-y-5 text-center font-semibold leading-[1.75] tracking-wide text-zinc-50"
+                  style={{ fontSize: `${fontSize}px` }}
+                >
+                  {parsedLines.map((line, index) => {
+                    if (line.kind === "blank") {
+                      return <div key={`blank-${index}`} className="h-8" aria-hidden="true" />;
+                    }
+
+                    if (line.kind === "pause") {
+                      return (
+                        <div
+                          key={`pause-${index}`}
+                          className="mx-auto w-fit rounded-md border border-yellow-500/40 bg-yellow-400/10 px-5 py-2 text-xl font-bold uppercase tracking-wider text-yellow-200"
+                        >
+                          {line.text}
+                        </div>
+                      );
+                    }
+
+                    if (line.kind === "heading") {
+                      return (
+                        <p
+                          key={`heading-${index}`}
+                          className="whitespace-pre-wrap text-5xl font-extrabold leading-[1.35] text-emerald-100 sm:text-6xl"
+                        >
+                          {line.text}
+                        </p>
+                      );
+                    }
+
+                    if (line.kind === "speaker") {
+                      return (
+                        <p key={`speaker-${index}`} className="whitespace-pre-wrap text-left">
+                          <span className="mr-2 rounded bg-zinc-800 px-2 py-1 text-yellow-300">
+                            {line.speaker}:
+                          </span>
+                          <span>{line.text}</span>
+                        </p>
+                      );
+                    }
+
+                    return (
+                      <p key={`line-${index}`} className="whitespace-pre-wrap text-zinc-100">
+                        {line.text}
+                      </p>
+                    );
+                  })}
+                </div>
+              ) : (
+                <div className="grid min-h-[50vh] place-items-center text-center">
+                  <p className="text-2xl font-medium text-zinc-400">
+                    Upload a .txt or .md script to begin.
+                  </p>
+                </div>
+              )}
+            </div>
+          </div>
+
+          <div className="sticky bottom-0 z-20 border-t border-zinc-800 bg-black/95 px-4 py-3 backdrop-blur">
+            <div className="mx-auto flex max-w-6xl flex-wrap items-center gap-2">
+              <button
+                type="button"
+                onClick={() => setIsPlaying((prev) => !prev)}
+                className="inline-flex items-center gap-2 rounded-md border border-zinc-600 bg-zinc-800 px-3 py-2 text-sm font-semibold transition hover:bg-zinc-700"
+              >
+                {isPlaying ? <Pause size={16} /> : <Play size={16} />}
+                {isPlaying ? "Pause" : "Play"}
+              </button>
+
+              <button
+                type="button"
+                onClick={() => setSpeed((prev) => Math.max(MIN_SPEED, prev - 1))}
+                className="rounded-md border border-zinc-700 bg-zinc-900 px-3 py-2 text-sm font-medium transition hover:bg-zinc-800"
+              >
+                Slower
+              </button>
+              <button
+                type="button"
+                onClick={() => setSpeed((prev) => Math.min(MAX_SPEED, prev + 1))}
+                className="rounded-md border border-zinc-700 bg-zinc-900 px-3 py-2 text-sm font-medium transition hover:bg-zinc-800"
+              >
+                Faster
+              </button>
+
+              <button
+                type="button"
+                onClick={resetToTop}
+                className="inline-flex items-center gap-2 rounded-md border border-zinc-700 bg-zinc-900 px-3 py-2 text-sm font-medium transition hover:bg-zinc-800"
+              >
+                <RotateCcw size={14} /> Reset
+              </button>
+
+              <button
+                type="button"
+                onClick={() => setFontSize((prev) => Math.max(MIN_FONT_SIZE, prev - 4))}
+                className="rounded-md border border-zinc-700 bg-zinc-900 px-3 py-2 text-sm font-medium transition hover:bg-zinc-800"
+              >
+                A-
+              </button>
+              <button
+                type="button"
+                onClick={() => setFontSize((prev) => Math.min(MAX_FONT_SIZE, prev + 4))}
+                className="rounded-md border border-zinc-700 bg-zinc-900 px-3 py-2 text-sm font-medium transition hover:bg-zinc-800"
+              >
+                A+
+              </button>
+
+              <button
+                type="button"
+                onClick={() => setIsMirrored((prev) => !prev)}
+                className="rounded-md border border-zinc-700 bg-zinc-900 px-3 py-2 text-sm font-medium transition hover:bg-zinc-800"
+              >
+                {isMirrored ? "Unmirror" : "Mirror"}
+              </button>
+
               <button
                 type="button"
                 onClick={() => {
-                  void retryMicrophonePermission();
+                  void toggleFullscreen();
                 }}
-                disabled={isRequestingMic}
-                className="rounded-md border border-amber-200/50 bg-amber-200/10 px-3 py-1.5 text-xs font-medium text-amber-100 transition hover:bg-amber-200/20 disabled:cursor-not-allowed disabled:opacity-60"
+                className="inline-flex items-center gap-2 rounded-md border border-zinc-700 bg-zinc-900 px-3 py-2 text-sm font-medium transition hover:bg-zinc-800"
               >
-                {isRequestingMic ? "Requesting Mic..." : "Retry Mic Access"}
+                {isFullscreen ? <Minimize size={14} /> : <Maximize size={14} />}
+                {isFullscreen ? "Exit Fullscreen" : "Fullscreen"}
               </button>
-              <a
-                href="https://support.google.com/chrome/answer/2693767"
-                target="_blank"
-                rel="noreferrer"
-                className="rounded-md border border-amber-200/40 px-3 py-1.5 text-xs font-medium text-amber-100 transition hover:bg-amber-200/20"
+
+              <button
+                type="button"
+                onClick={() => goToRelativeScript(-1)}
+                className="rounded-md border border-zinc-700 bg-zinc-900 px-3 py-2 text-sm font-medium transition hover:bg-zinc-800"
               >
-                Open Browser Mic Help
-              </a>
-            </div>
-          </div>
-        ) : null}
-      </div>
+                Previous
+              </button>
 
-      <div
-        ref={scrollerRef}
-        className="relative h-[calc(100vh-4.5rem)] overflow-y-auto overscroll-contain"
-        style={{
-          WebkitOverflowScrolling: "touch",
-          scrollBehavior: "auto",
-        }}
-      >
-        <div
-          className="relative min-h-full"
-          style={transformValue ? { transform: transformValue } : undefined}
-        >
-          <div className="pointer-events-none absolute left-1/2 top-1/3 z-20 w-[min(75vw,960px)] -translate-x-1/2 border-t border-emerald-400/80" />
+              <button
+                type="button"
+                onClick={() => goToRelativeScript(1)}
+                className="rounded-md border border-zinc-700 bg-zinc-900 px-3 py-2 text-sm font-medium transition hover:bg-zinc-800"
+              >
+                Next
+              </button>
 
-          <div className="mx-auto w-full max-w-6xl px-6 pb-[45vh] pt-[33vh] sm:px-14 lg:px-28">
-            <div className="space-y-6 text-center font-sans text-4xl font-medium leading-[1.35] tracking-[0.01em] text-zinc-100 sm:text-5xl">
-              {scriptLines.length > 0 ? (
-                scriptLines.map((line, index) =>
-                  line.trim() ? (
-                    <p
-                      key={`${line.slice(0, 24)}-${index}`}
-                      ref={(element) => {
-                        lineRefs.current[index] = element;
-                      }}
-                      className={`whitespace-pre-wrap transition-colors ${
-                        currentLineIndex === index
-                          ? "text-yellow-300"
-                          : "text-zinc-100"
-                      }`}
-                    >
-                      {line}
-                    </p>
-                  ) : (
-                    <div key={`blank-${index}`} className="h-8" aria-hidden="true" />
-                  ),
-                )
-              ) : (
-                <p className="text-zinc-400">No script provided.</p>
-              )}
+              <div className="ml-auto text-right text-xs text-zinc-400">
+                <p>
+                  {currentScript ? `${currentScript.fileName}` : "No script loaded"} • Speed {speed}
+                </p>
+                <p>
+                  Elapsed {formatElapsed(elapsedSeconds)} • Shortcuts: Space / ↑ / ↓ / R / F / M / N / P
+                </p>
+              </div>
             </div>
           </div>
         </div>
