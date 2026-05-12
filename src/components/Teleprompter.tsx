@@ -113,6 +113,8 @@ export default function Teleprompter({ onPlayingChange }: TeleprompterProps) {
   const [elapsedSeconds, setElapsedSeconds] = useState(0);
   const [takeLog, setTakeLog] = useState<TakeMarker[]>([]);
   const [editorNotes, setEditorNotes] = useState("");
+  const [manualTitle, setManualTitle] = useState("");
+  const [manualContent, setManualContent] = useState("");
 
   const fileInputRef = useRef<HTMLInputElement | null>(null);
   const frameRef = useRef<number | null>(null);
@@ -217,6 +219,40 @@ export default function Teleprompter({ onPlayingChange }: TeleprompterProps) {
     setTakeLog([]);
     setElapsedSeconds(0);
   }, []);
+
+  const loadManualScript = useCallback(
+    (replaceCurrent: boolean) => {
+      const normalizedContent = manualContent.replace(/\r\n/g, "\n");
+      if (!normalizedContent.trim()) {
+        setUploadError("Paste script text before loading.");
+        return;
+      }
+
+      const title = manualTitle.trim() || "Pasted Script";
+      const newScript: UploadedScript = {
+        id: `${Date.now()}-manual-${Math.random().toString(36).slice(2, 8)}`,
+        fileName: `${title.toLowerCase().replace(/\s+/g, "-") || "pasted-script"}.txt`,
+        title,
+        content: normalizedContent,
+        loadedAt: new Date().toISOString(),
+      };
+
+      if (replaceCurrent && currentScriptId) {
+        setScripts((prev) =>
+          prev.map((item) => (item.id === currentScriptId ? { ...newScript, id: currentScriptId } : item)),
+        );
+      } else {
+        setScripts((prev) => [...prev, newScript]);
+        setCurrentScriptId(newScript.id);
+      }
+
+      setIsPlaying(false);
+      setUploadError(null);
+      setManualContent("");
+      setManualTitle("");
+    },
+    [currentScriptId, manualContent, manualTitle],
+  );
 
   const toggleFullscreen = useCallback(async () => {
     const root = rootRef.current;
@@ -471,8 +507,8 @@ export default function Teleprompter({ onPlayingChange }: TeleprompterProps) {
 
       <div className="flex h-full">
         <aside
-          className={`border-r border-zinc-800 bg-zinc-950 transition-all duration-200 ${
-            isSidebarOpen ? "w-80 p-4" : "w-0 overflow-hidden p-0"
+          className={`h-full border-r border-zinc-800 bg-zinc-950 transition-all duration-200 ${
+            isSidebarOpen ? "w-80 overflow-y-auto p-4" : "w-0 overflow-hidden p-0"
           }`}
         >
           <div className="flex items-center justify-between">
@@ -494,13 +530,52 @@ export default function Teleprompter({ onPlayingChange }: TeleprompterProps) {
             Clear All Scripts
           </button>
 
+          <div className="mt-3 rounded-md border border-zinc-800 bg-zinc-900/50 p-3">
+            <p className="text-xs font-semibold text-zinc-300">Paste fallback</p>
+            <p className="mt-1 text-[11px] text-zinc-500">
+              Use this if a .txt/.md file fails to import.
+            </p>
+
+            <input
+              value={manualTitle}
+              onChange={(event) => setManualTitle(event.target.value)}
+              placeholder="Optional title"
+              className="mt-2 w-full rounded-md border border-zinc-700 bg-black/40 px-2 py-2 text-xs text-zinc-100 outline-none focus:border-zinc-500"
+            />
+
+            <textarea
+              value={manualContent}
+              onChange={(event) => setManualContent(event.target.value)}
+              placeholder="Paste script text here"
+              className="mt-2 h-24 w-full resize-y rounded-md border border-zinc-700 bg-black/40 p-2 text-xs text-zinc-100 outline-none focus:border-zinc-500"
+            />
+
+            <div className="mt-2 flex gap-2">
+              <button
+                type="button"
+                onClick={() => loadManualScript(false)}
+                className="flex-1 rounded-md border border-zinc-700 bg-zinc-800 px-2 py-2 text-xs font-medium transition hover:bg-zinc-700"
+              >
+                Load New
+              </button>
+              <button
+                type="button"
+                onClick={() => loadManualScript(true)}
+                disabled={!currentScriptId}
+                className="flex-1 rounded-md border border-zinc-700 bg-zinc-800 px-2 py-2 text-xs font-medium transition hover:bg-zinc-700 disabled:cursor-not-allowed disabled:opacity-50"
+              >
+                Replace Current
+              </button>
+            </div>
+          </div>
+
           {uploadError ? (
             <p className="mt-3 rounded-md border border-amber-300/30 bg-amber-300/10 p-2 text-xs text-amber-200">
               {uploadError}
             </p>
           ) : null}
 
-          <ul className="mt-4 space-y-2 overflow-y-auto pr-1 text-sm">
+          <ul className="mt-4 space-y-2 pr-1 text-sm">
             {scripts.map((item) => {
               const active = item.id === currentScriptId;
               const isEmpty = item.content.trim().length === 0;
