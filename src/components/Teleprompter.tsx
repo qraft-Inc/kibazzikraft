@@ -530,7 +530,39 @@ export default function Teleprompter({ onPlayingChange }: TeleprompterProps) {
             Clear All Scripts
           </button>
 
-          <div className="mt-3 rounded-md border border-zinc-800 bg-zinc-900/50 p-3">
+          {uploadError ? (
+            <p className="mt-3 rounded-md border border-amber-300/30 bg-amber-300/10 p-2 text-xs text-amber-200">
+              {uploadError}
+            </p>
+          ) : null}
+
+          <ul className="mt-4 space-y-2 pr-1 text-sm">
+            {scripts.map((item) => {
+              const active = item.id === currentScriptId;
+              const isEmpty = item.content.trim().length === 0;
+              return (
+                <li key={item.id}>
+                  <button
+                    type="button"
+                    onClick={() => selectScript(item.id)}
+                    className={`w-full rounded-lg border px-3 py-2 text-left transition ${
+                      active
+                        ? "border-emerald-500 bg-emerald-500/10 text-emerald-100"
+                        : "border-zinc-800 bg-zinc-900 text-zinc-300 hover:border-zinc-600"
+                    }`}
+                  >
+                    <p className="truncate font-medium">{item.title}</p>
+                    <p className="truncate text-xs opacity-75">{item.fileName}</p>
+                    <p className="mt-1 text-[11px] text-zinc-500">
+                      {new Date(item.loadedAt).toLocaleTimeString()} {isEmpty ? "• empty file" : ""}
+                    </p>
+                  </button>
+                </li>
+              );
+            })}
+          </ul>
+
+          <div className="mt-4 rounded-md border border-zinc-800 bg-zinc-900/50 p-3">
             <p className="text-xs font-semibold text-zinc-300">Paste fallback</p>
             <p className="mt-1 text-[11px] text-zinc-500">
               Use this if a .txt/.md file fails to import.
@@ -568,38 +600,6 @@ export default function Teleprompter({ onPlayingChange }: TeleprompterProps) {
               </button>
             </div>
           </div>
-
-          {uploadError ? (
-            <p className="mt-3 rounded-md border border-amber-300/30 bg-amber-300/10 p-2 text-xs text-amber-200">
-              {uploadError}
-            </p>
-          ) : null}
-
-          <ul className="mt-4 space-y-2 pr-1 text-sm">
-            {scripts.map((item) => {
-              const active = item.id === currentScriptId;
-              const isEmpty = item.content.trim().length === 0;
-              return (
-                <li key={item.id}>
-                  <button
-                    type="button"
-                    onClick={() => selectScript(item.id)}
-                    className={`w-full rounded-lg border px-3 py-2 text-left transition ${
-                      active
-                        ? "border-emerald-500 bg-emerald-500/10 text-emerald-100"
-                        : "border-zinc-800 bg-zinc-900 text-zinc-300 hover:border-zinc-600"
-                    }`}
-                  >
-                    <p className="truncate font-medium">{item.title}</p>
-                    <p className="truncate text-xs opacity-75">{item.fileName}</p>
-                    <p className="mt-1 text-[11px] text-zinc-500">
-                      {new Date(item.loadedAt).toLocaleTimeString()} {isEmpty ? "• empty file" : ""}
-                    </p>
-                  </button>
-                </li>
-              );
-            })}
-          </ul>
 
           <div className="mt-4 space-y-3 border-t border-zinc-800 pt-4">
             <button
