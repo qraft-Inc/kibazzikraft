@@ -574,76 +574,7 @@ export default function Teleprompter({ onPlayingChange }: TeleprompterProps) {
             {isSidebarOpen ? <ChevronLeft size={16} /> : <ChevronRight size={16} />}
           </button>
 
-          <div
-            ref={scrollerRef}
-            className="min-h-0 flex-1 overflow-y-auto overscroll-contain"
-            style={{ WebkitOverflowScrolling: "touch" }}
-          >
-            <div
-              className="mx-auto w-full max-w-6xl px-6 pb-[40vh] pt-[28vh] sm:px-10 lg:px-20"
-              style={{ transform: isMirrored ? "scaleX(-1)" : undefined }}
-            >
-              {currentScript ? (
-                <div
-                  className="space-y-5 text-center font-semibold leading-[1.75] tracking-wide text-zinc-50"
-                  style={{ fontSize: `${fontSize}px` }}
-                >
-                  {parsedLines.map((line, index) => {
-                    if (line.kind === "blank") {
-                      return <div key={`blank-${index}`} className="h-8" aria-hidden="true" />;
-                    }
-
-                    if (line.kind === "pause") {
-                      return (
-                        <div
-                          key={`pause-${index}`}
-                          className="mx-auto w-fit rounded-md border border-yellow-500/40 bg-yellow-400/10 px-5 py-2 text-xl font-bold uppercase tracking-wider text-yellow-200"
-                        >
-                          {line.text}
-                        </div>
-                      );
-                    }
-
-                    if (line.kind === "heading") {
-                      return (
-                        <p
-                          key={`heading-${index}`}
-                          className="whitespace-pre-wrap text-5xl font-extrabold leading-[1.35] text-emerald-100 sm:text-6xl"
-                        >
-                          {line.text}
-                        </p>
-                      );
-                    }
-
-                    if (line.kind === "speaker") {
-                      return (
-                        <p key={`speaker-${index}`} className="whitespace-pre-wrap text-left">
-                          <span className="mr-2 rounded bg-zinc-800 px-2 py-1 text-yellow-300">
-                            {line.speaker}:
-                          </span>
-                          <span>{line.text}</span>
-                        </p>
-                      );
-                    }
-
-                    return (
-                      <p key={`line-${index}`} className="whitespace-pre-wrap text-zinc-100">
-                        {line.text}
-                      </p>
-                    );
-                  })}
-                </div>
-              ) : (
-                <div className="grid min-h-[50vh] place-items-center text-center">
-                  <p className="text-2xl font-medium text-zinc-400">
-                    Upload a .txt or .md script to begin.
-                  </p>
-                </div>
-              )}
-            </div>
-          </div>
-
-          <div className="sticky bottom-0 z-20 border-t border-zinc-800 bg-black/95 px-4 py-3 backdrop-blur">
+          <div className="sticky top-0 z-20 border-b border-zinc-800 bg-black/95 px-4 py-3 pl-16 backdrop-blur">
             <div className="mx-auto flex max-w-6xl flex-wrap items-center gap-2">
               <button
                 type="button"
@@ -735,6 +666,75 @@ export default function Teleprompter({ onPlayingChange }: TeleprompterProps) {
                   Elapsed {formatElapsed(elapsedSeconds)} • Shortcuts: Space / ↑ / ↓ / R / F / M / N / P
                 </p>
               </div>
+            </div>
+          </div>
+
+          <div
+            ref={scrollerRef}
+            className="min-h-0 flex-1 overflow-y-auto overscroll-contain"
+            style={{ WebkitOverflowScrolling: "touch" }}
+          >
+            <div
+              className="mx-auto w-full max-w-6xl px-6 pb-[40vh] pt-[28vh] sm:px-10 lg:px-20"
+              style={{ transform: isMirrored ? "scaleX(-1)" : undefined }}
+            >
+              {currentScript ? (
+                <div
+                  className="space-y-5 text-center font-semibold leading-[1.75] tracking-wide text-zinc-50"
+                  style={{ fontSize: `${fontSize}px` }}
+                >
+                  {parsedLines.map((line, index) => {
+                    if (line.kind === "blank") {
+                      return <div key={`blank-${index}`} className="h-8" aria-hidden="true" />;
+                    }
+
+                    if (line.kind === "pause") {
+                      return (
+                        <div
+                          key={`pause-${index}`}
+                          className="mx-auto w-fit rounded-md border border-yellow-500/40 bg-yellow-400/10 px-5 py-2 text-xl font-bold uppercase tracking-wider text-yellow-200"
+                        >
+                          {line.text}
+                        </div>
+                      );
+                    }
+
+                    if (line.kind === "heading") {
+                      return (
+                        <p
+                          key={`heading-${index}`}
+                          className="whitespace-pre-wrap text-5xl font-extrabold leading-[1.35] text-emerald-100 sm:text-6xl"
+                        >
+                          {line.text}
+                        </p>
+                      );
+                    }
+
+                    if (line.kind === "speaker") {
+                      return (
+                        <p key={`speaker-${index}`} className="whitespace-pre-wrap text-left">
+                          <span className="mr-2 rounded bg-zinc-800 px-2 py-1 text-yellow-300">
+                            {line.speaker}:
+                          </span>
+                          <span>{line.text}</span>
+                        </p>
+                      );
+                    }
+
+                    return (
+                      <p key={`line-${index}`} className="whitespace-pre-wrap text-zinc-100">
+                        {line.text}
+                      </p>
+                    );
+                  })}
+                </div>
+              ) : (
+                <div className="grid min-h-[50vh] place-items-center text-center">
+                  <p className="text-2xl font-medium text-zinc-400">
+                    Upload a .txt or .md script to begin.
+                  </p>
+                </div>
+              )}
             </div>
           </div>
         </div>
